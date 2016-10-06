@@ -161,7 +161,7 @@ class ContentReviewSettingsTest extends SapphireTest
         /** @var Page|SiteTreeContentReview $page */
         $page = $this->objFromFixture('Page', 'custom');
 
-        $date = $page->getReviewDate();
+        $date = $page->getReviewDueDate();
 
         $this->assertEquals('2010-02-01', $date->format('Y-m-d'));
     }
@@ -171,7 +171,7 @@ class ContentReviewSettingsTest extends SapphireTest
         /** @var Page|SiteTreeContentReview $page */
         $page = $this->objFromFixture("Page", "inherit");
 
-        $nextReviewDate = $page->getReviewDate();
+        $nextReviewDate = $page->getReviewDueDate();
 
         $this->assertInstanceOf("Date", $nextReviewDate);
 
@@ -187,7 +187,7 @@ class ContentReviewSettingsTest extends SapphireTest
     {
         // Although page-1-1 inherits from page-1, it has an independent review date
         $page = $this->objFromFixture("Page", "page-1-1");
-        $nextReviewDate = $page->getReviewDate();
+        $nextReviewDate = $page->getReviewDueDate();
         $this->assertInstanceOf("Date", $nextReviewDate);
         $this->assertEquals('2011-04-12', $nextReviewDate->format("Y-m-d"));
     }

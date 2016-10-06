@@ -32,12 +32,11 @@ class ContentReviewCMSExtension extends LeftAndMainExtension
 
         $notes = (!empty($data["ReviewNotes"]) ? $data["ReviewNotes"] : _t("ContentReview.NOCOMMENTS", "(no comments)"));
         $page->addReviewNote(Member::currentUser(), $notes);
-        $page->advanceReviewDate();
-        
+
         $this->owner->getResponse()->addHeader("X-Status", _t("ContentReview.REVIEWSUCCESSFUL", "Content reviewed successfully"));
         return $this->owner->redirectBack();
     }
-    
+
     /**
      * Find the page this form is updating
      *

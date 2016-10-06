@@ -22,16 +22,6 @@ class PagesDueForReviewReport extends SS_Report
     {
         $filtersList = new FieldList();
 
-        $filtersList->push(
-            DateField::create("ReviewDateAfter", _t("PagesDueForReviewReport.REVIEWDATEAFTER", "Review date after or on"))
-                ->setConfig("showcalendar", true)
-        );
-
-        $filtersList->push(
-            DateField::create("ReviewDateBefore", _t("PagesDueForReviewReport.REVIEWDATEBEFORE", "Review date before or on"), date("d/m/Y", strtotime("midnight")))
-                ->setConfig("showcalendar", true)
-        );
-
         $filtersList->push(new CheckboxField("ShowVirtualPages", _t("PagesDueForReviewReport.SHOWVIRTUALPAGES", "Show Virtual Pages")));
 
         $filtersList->push(new CheckboxField("OnlyMyPages", _t("PagesDueForReviewReport.ONLYMYPAGES", "Only Show pages assigned to me")));
@@ -53,21 +43,11 @@ class PagesDueForReviewReport extends SS_Report
                 "title" => "Page name",
                 "formatting" => "<a href='{$linkPath}/\$ID?{$linkQuery}' title='Edit page'>\$value</a>"
             ),
-            "NextReviewDate" => array(
-                "title" => "Review Date",
+            "LastReviewDate" => array(
+                "title" => "Last reviewed",
                 "casting" => "Date->Full",
                 "formatting" => function ($value, $item) {
-                    if ($item->ContentReviewType == "Disabled") {
-                        return "disabled";
-                    }
-                    if ($item->ContentReviewType == "Inherit") {
-                        $setting = $item->getOptions();
-                        if (!$setting) {
-                            return "disabled";
-                        }
-                        return $item->obj("NextReviewDate")->Full();
-                    }
-                    return $value;
+                    return $item->obj("LastReviewDate")->Full();
                 }
             ),
             "OwnerNames" => array(
@@ -120,50 +100,18 @@ class PagesDueForReviewReport extends SS_Report
      */
     public function sourceRecords($params = array())
     {
-        Versioned::reading_stage("Stage");
+        Versioned::reading_stage("Live"); // No need to review draft content
 
-        $records = SiteTree::get();
+        $records = SiteTreeContentReview::getPagesForReview();
         $compatibility = ContentReviewCompatability::start();
-
-        if (empty($params["ReviewDateBefore"]) && empty($params["ReviewDateAfter"])) {
-            // If there's no review dates set, default to all pages due for review now
-            $reviewDate = new Zend_Date(SS_Datetime::now()->Format("U"));
-            $reviewDate->add(1, Zend_Date::DAY);
-            $records = $records->where(sprintf('"NextReviewDate" < \'%s\'', $reviewDate->toString("YYYY-MM-dd")));
-        } else {
-            // Review date before
-            if (!empty($params['ReviewDateBefore'])) {
-                // TODO Get value from DateField->dataValue() once we have access to form elements here
-                $reviewDate = new Zend_Date($params["ReviewDateBefore"], Config::inst()->get("i18n", "date_format"));
-                $reviewDate->add(1, Zend_Date::DAY);
-                $records = $records->where(sprintf("\"NextReviewDate\" < '%s'", $reviewDate->toString("YYYY-MM-dd")));
-            }
-
-            // Review date after
-            if (!empty($params["ReviewDateAfter"])) {
-                // TODO Get value from DateField->dataValue() once we have access to form elements here
-                $reviewDate = new Zend_Date($params["ReviewDateAfter"], Config::inst()->get("i18n", "date_format"));
-                $records = $records->where(sprintf("\"NextReviewDate\" >= '%s'", $reviewDate->toString("YYYY-MM-dd")));
-            }
-        }
 
         // Show virtual pages?
         if (empty($params["ShowVirtualPages"])) {
             $virtualPageClasses = ClassInfo::subclassesFor("VirtualPage");
-            $records = $records->where(sprintf(
-                "\"SiteTree\".\"ClassName\" NOT IN ('%s')",
-                implode("','", array_values($virtualPageClasses))
-            ));
-        }
-
-        // Owner dropdown
-        if (!empty($params["ContentReviewOwner"])) {
-            $ownerNames = Convert::raw2sql($params["ContentReviewOwner"]);
-            $records = $records->filter("OwnerNames:PartialMatch", $ownerNames);
+            $records = $records->exclude('SiteTree', $virtualPageClasses);
         }
 
         // Only show pages assigned to the current user?
-        // This come last because it transforms $records to an ArrayList.
         if (!empty($params["OnlyMyPages"])) {
             $currentUser = Member::currentUser();
 

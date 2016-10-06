@@ -6,7 +6,6 @@
  *
  * @property string $ContentReviewType
  * @property int    $ReviewPeriodDays
- * @property Date   $NextReviewDate
  * @property string $LastEditedByName
  * @property string $OwnerNames
  *
@@ -22,7 +21,6 @@ class SiteTreeContentReview extends DataExtension implements PermissionProvider
     private static $db = array(
         "ContentReviewType" => "Enum('Inherit, Disabled, Custom', 'Inherit')",
         "ReviewPeriodDays"  => "Int",
-        "NextReviewDate"    => "Date",
         "LastEditedByName"  => "Varchar(255)",
         "OwnerNames"        => "Varchar(255)",
     );
@@ -32,6 +30,13 @@ class SiteTreeContentReview extends DataExtension implements PermissionProvider
      */
     private static $defaults = array(
         "ContentReviewType" => "Inherit",
+    );
+
+    /**
+     * @var array
+     */
+    private static $casting = array(
+        "LastReviewDate" => "Date",
     );
 
     /**
@@ -118,7 +123,7 @@ class SiteTreeContentReview extends DataExtension implements PermissionProvider
      */
     public function updateCMSActions(FieldList $actions)
     {
-        if ($this->canBeReviewedBy(Member::currentUser())) {
+        if ($this->isDueForReview() && $this->canBeReviewedBy(Member::currentUser())) {
             Requirements::css("contentreview/css/contentreview.css");
 
             $reviewTitle = LiteralField::create(
@@ -149,14 +154,10 @@ class SiteTreeContentReview extends DataExtension implements PermissionProvider
      *
      * @return bool|Date
      */
-    public function getReviewDate(SiteTree $page = null)
+    public function getReviewDueDate(SiteTree $page = null)
     {
         if ($page === null) {
             $page = $this->owner;
-        }
-
-        if ($page->obj("NextReviewDate")->exists()) {
-            return $page->obj("NextReviewDate");
         }
 
         $options = $this->owner->getOptions();
@@ -169,12 +170,39 @@ class SiteTreeContentReview extends DataExtension implements PermissionProvider
             return false;
         }
 
-        // Failover to check on ReviewPeriodDays + LastEdited
-        $nextReviewUnixSec = strtotime(" + " . $options->ReviewPeriodDays . " days", SS_Datetime::now()->format("U"));
-        $date = Date::create("NextReviewDate");
-        $date->setValue(date("Y-m-d H:i:s", $nextReviewUnixSec));
+        $lastReviewDate = $this->owner->getLastReviewDate();
+        $nextReviewUnixSec = strtotime("$lastReviewDate + $options->ReviewPeriodDays days");
+        $nextReviewDateString = date("Y-m-d H:i:s", $nextReviewUnixSec);
 
+        $date = Date::create("NextReviewDate");
+        $date->setValue($nextReviewDateString);
         return $date;
+    }
+
+    public function getLastReviewDate() {
+        // Get date from most recent log entry for this page, fallback to last published
+        $lastReview = $this->owner->ReviewLogs()->sort('Created', 'DESC')->first();
+        if ($lastReview) {
+            $date = $lastReview->Created;
+        } else {
+            $liveRecord = (Versioned::current_stage() == 'Live') ? $this->owner : Versioned::get_by_stage('SiteTree', 'Live')->byID($this->owner->ID);
+            if (!$liveRecord) return false;
+            $date = $liveRecord->LastEdited;
+        }
+        return $date;
+    }
+
+    public function isDueForReview() {
+        if ($reviewDate = $this->getReviewDueDate()) {
+            return ($reviewDate->format('U') < SS_Datetime::now()->format('U'));
+        }
+        return false;
+    }
+
+    public static function getPagesForReview() {
+        return Page::get()->filterByCallback(function($item, $list) {
+            return $item->isDueForReview();
+        });
     }
 
     /**
@@ -300,11 +328,14 @@ class SiteTreeContentReview extends DataExtension implements PermissionProvider
     {
         Requirements::javascript("contentreview/javascript/contentreview.js");
 
+        $dueDate = $this->owner->getReviewDueDate();
+        $dueDate = $dueDate ? $dueDate->Nice() : '(not set)';
+
         // Display read-only version only
         if (!Permission::check("EDIT_CONTENT_REVIEW_FIELDS")) {
             $schedule = self::get_schedule();
             $contentOwners = ReadonlyField::create("ROContentOwners", _t("ContentReview.CONTENTOWNERS", "Content Owners"), $this->getOwnerNames());
-            $nextReviewAt = DateField::create('RONextReviewDate', _t("ContentReview.NEXTREVIEWDATE", "Next review date"), $this->owner->NextReviewDate);
+            $nextReviewAt = ReadonlyField::create('RONextReviewDate', _t("ContentReview.NEXTREVIEWDATE", "Next review date"), $dueDate);
 
             if (!isset($schedule[$this->owner->ReviewPeriodDays])) {
                 $reviewFreq = ReadonlyField::create("ROReviewPeriodDays", _t("ContentReview.REVIEWFREQUENCY", "Review frequency"), $schedule[0]);
@@ -354,7 +385,7 @@ class SiteTreeContentReview extends DataExtension implements PermissionProvider
             ->setMultiple(true)
             ->addExtraClass('custom-setting')
             ->setAttribute("data-placeholder", _t("ContentReview.ADDUSERS", "Add users"))
-            ->setDescription(_t('ContentReview.OWNERUSERSDESCRIPTION', 'Page owners that are responsible for reviews'));
+            ->setDescription(_t('ContentReview.OWNERUSERSDESCRIPTION', 'CMS users that are responsible for reviews'));
 
         $groupsMap = array();
 
@@ -367,21 +398,13 @@ class SiteTreeContentReview extends DataExtension implements PermissionProvider
             ->setMultiple(true)
             ->addExtraClass('custom-setting')
             ->setAttribute("data-placeholder", _t("ContentReview.ADDGROUP", "Add groups"))
-            ->setDescription(_t("ContentReview.OWNERGROUPSDESCRIPTION", "Page owners that are responsible for reviews"));
-
-        $reviewDate = DateField::create("NextReviewDate", _t("ContentReview.NEXTREVIEWDATE", "Next review date"))
-            ->setConfig("showcalendar", true)
-            ->setConfig("dateformat", "yyyy-MM-dd")
-            ->setConfig("datavalueformat", "yyyy-MM-dd")
-            ->setDescription(_t("ContentReview.NEXTREVIEWDATADESCRIPTION", "Leave blank for no review"));
+            ->setDescription(_t("ContentReview.OWNERGROUPSDESCRIPTION", "Groups of CMS users that are responsible for reviews"));
 
         $reviewFrequency = DropdownField::create(
             "ReviewPeriodDays",
             _t("ContentReview.REVIEWFREQUENCY", "Review frequency"),
             self::get_schedule()
-        )
-            ->addExtraClass('custom-setting')
-            ->setDescription(_t("ContentReview.REVIEWFREQUENCYDESCRIPTION", "The review date will be set to this far in the future whenever the page is published"));
+        )->addExtraClass('custom-setting');
 
         $notesField = GridField::create("ReviewNotes", "Review Notes", $this->owner->ReviewLogs(), GridFieldConfig_RecordEditor::create());
 
@@ -391,10 +414,10 @@ class SiteTreeContentReview extends DataExtension implements PermissionProvider
             CompositeField::create(
                 $userField,
                 $groupField,
-                $reviewDate,
                 $reviewFrequency
             )->addExtraClass("review-settings"),
             ReadonlyField::create("ROContentOwners", _t("ContentReview.CONTENTOWNERS", "Content Owners"), $this->getOwnerNames()),
+            ReadonlyField::create("NextReviewDate", _t("ContentReview.NEXTREVIEWDATE", "Due for review on"), $dueDate),
             $notesField,
         ));
     }
@@ -414,52 +437,19 @@ class SiteTreeContentReview extends DataExtension implements PermissionProvider
     }
 
     /**
-     * Advance review date to the next date based on review period or set it to null
-     * if there is no schedule. Returns true if date was required and false is content
-     * review is 'off'.
-     *
-     * @return bool
-     */
-    public function advanceReviewDate()
-    {
-        $nextDate = false;
-        $options = $this->getOptions();
-
-        if ($options && $options->ReviewPeriodDays) {
-            $nextDate = date('Y-m-d', strtotime('+ ' . $options->ReviewPeriodDays . ' days', SS_Datetime::now()->format('U')));
-
-            $this->owner->NextReviewDate = $nextDate;
-            $this->owner->write();
-        }
-
-        return (bool) $nextDate;
-    }
-
-    /**
-     * Check if a review is due by a member for this owner.
+     * Check if a member is allowed to review this page
      *
      * @param Member $member
      *
      * @return bool
      */
-    public function canBeReviewedBy(Member $member = null)
+    public function canBeReviewedBy(Member $member)
     {
-        if (!$this->owner->obj("NextReviewDate")->exists()) {
-            return false;
-        }
-
-        if ($this->owner->obj("NextReviewDate")->InFuture()) {
-            return false;
-        }
 
         $options = $this->getOptions();
 
         if ($options->OwnerGroups()->count() == 0 && $options->OwnerUsers()->count() == 0) {
             return false;
-        }
-
-        if (!$member) {
-            return true;
         }
 
         if ($member->inGroups($options->OwnerGroups())) {
@@ -483,81 +473,6 @@ class SiteTreeContentReview extends DataExtension implements PermissionProvider
         if($changedFields) {
             $this->owner->LastEditedByName = $this->owner->getEditorName();
             $this->owner->OwnerNames = $this->owner->getOwnerNames();
-        }
-
-        // If the user changed the type, we need to recalculate the review date.
-        if ($this->owner->isChanged("ContentReviewType", 2)) {
-            if ($this->owner->ContentReviewType == "Disabled") {
-                $this->setDefaultReviewDateForDisabled();
-            } elseif ($this->owner->ContentReviewType == "Custom") {
-                $this->setDefaultReviewDateForCustom();
-            } else {
-                $this->setDefaultReviewDateForInherited();
-            }
-        }
-
-        // Ensure that a inherited page always have a next review date
-        if ($this->owner->ContentReviewType == "Inherit" && !$this->owner->NextReviewDate) {
-            $this->setDefaultReviewDateForInherited();
-        }
-
-        // We need to update all the child pages that inherit this setting. We can only
-        // change children after this record has been created, otherwise the stageChildren
-        // method will grab all pages in the DB (this messes up unit testing)
-        if (!$this->owner->exists()) {
-            return;
-        }
-
-        // parent page change its review period
-        // && !$this->owner->isChanged('ContentReviewType', 2)
-        if ($this->owner->isChanged("ReviewPeriodDays", 2)) {
-            $nextReviewUnixSec = strtotime(" + " . $this->owner->ReviewPeriodDays . " days", SS_Datetime::now()->format("U"));
-            $this->owner->NextReviewDate = date("Y-m-d", $nextReviewUnixSec);
-        }
-    }
-
-    private function setDefaultReviewDateForDisabled()
-    {
-        $this->owner->NextReviewDate = null;
-    }
-
-    protected function setDefaultReviewDateForCustom()
-    {
-        // Don't overwrite existing value
-        if ($this->owner->NextReviewDate) {
-            return;
-        }
-
-        $this->owner->NextReviewDate = null;
-        $nextDate = $this->getReviewDate();
-
-        if (is_object($nextDate)) {
-            $this->owner->NextReviewDate = $nextDate->getValue();
-        } else {
-            $this->owner->NextReviewDate = $nextDate;
-        }
-    }
-
-    protected function setDefaultReviewDateForInherited()
-    {
-        // Don't overwrite existing value
-        if ($this->owner->NextReviewDate) {
-            return;
-        }
-
-        $options = $this->getOptions();
-        $nextDate = null;
-
-        if ($options instanceof SiteTree) {
-            $nextDate = $this->getReviewDate($options);
-        } elseif ($options instanceof SiteConfig) {
-            $nextDate = $this->getReviewDate();
-        }
-
-        if (is_object($nextDate)) {
-            $this->owner->NextReviewDate = $nextDate->getValue();
-        } else {
-            $this->owner->NextReviewDate = $nextDate;
         }
     }
 

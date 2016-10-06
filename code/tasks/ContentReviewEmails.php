@@ -12,10 +12,10 @@ class ContentReviewEmails extends BuildTask
     {
         $compatibility = ContentReviewCompatability::start();
 
-        // First grab all the pages with a custom setting
-        $pages = Page::get()
-            ->filter('NextReviewDate:LessThanOrEqual', SS_Datetime::now()->URLDate());
+        // Get pages due for review
+        $pages = SiteTreeContentReview::getPagesForReview();
 
+        // Make a list for each reviewer
         $overduePages = $this->getOverduePagesForOwners($pages);
 
         // Lets send one email to one owner with all the pages in there instead of no of pages
@@ -37,9 +37,6 @@ class ContentReviewEmails extends BuildTask
         $overduePages = array();
 
         foreach ($pages as $page) {
-            if (!$page->canBeReviewedBy()) {
-                continue;
-            }
 
             $option = $page->getOptions();
 
